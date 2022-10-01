@@ -14,6 +14,56 @@ import (
 
 type i3Cmd string
 
+type KVEntry struct {
+	Key   string
+	Value interface{}
+}
+
+func New(key string, val []byte) *KVEntry {
+	return &KVEntry{
+		key,
+		val,
+	}
+}
+
+func NewFromStore(key string, db *badger.DB) (*KVEntry, error) {
+	kve := &KVEntry{}
+	kve.Key = key
+
+	err := kve.Fetch(db)
+	if err != nil {
+		return kve, err
+	}
+	return kve, nil
+}
+
+func (kv *KVEntry) Store(db *badger.DB) error {
+	err := db.Update(func(txn *badger.Txn) error {
+		err := txn.Set([]byte(kv.Key), kv.Value.([]byte))
+		return err
+	})
+
+	return err
+}
+
+func (kv *KVEntry) Fetch(db *badger.DB) error {
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(kv.Key))
+		if err != nil {
+			return err
+		}
+
+		item.Value(func(val []byte) error {
+			var innerVal []byte
+			copy(innerVal, val)
+			kv.Value = innerVal
+			return nil
+		})
+		return err
+	})
+	return err
+}
+
 const (
 	mark      i3Cmd = "mark"
 	hide            = "move scratchpad"
