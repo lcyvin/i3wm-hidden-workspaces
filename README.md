@@ -6,6 +6,12 @@ An incredibly hacky, not entirely working method of implementing numerous named 
 
 *restoring layouts only partly working
 
+# Why? 
+To hide your daemons
+
+# No but like, actually why?
+Because I suck at C++ and this was easier than modifying polybar to filter out named workspaces while un-focussed
+
 # TODO
 - Sanity check marks so we don't write 80 million to a window when it only needs 1
 - make resizing windows actually working
