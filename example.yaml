@@ -1,0 +1,5 @@
+persistent-db: false
+save-layout: true
+workspaces:
+  - foo
+  - bar
