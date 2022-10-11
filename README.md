@@ -1,6 +1,7 @@
 # i3wm-hidden-workspaces
 
-!!! THIS IS INCREDIBLY BUGGY, USE AT YOUR OWN RISK !!!
+## !!! THIS IS INCREDIBLY BUGGY, USE AT YOUR OWN RISK !!!
+## Seriously calling this an "alpha build" is generous
 
 An incredibly hacky, not entirely working method of implementing numerous named scratchpads with restoring layouts*
 
