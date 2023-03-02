@@ -34,10 +34,34 @@ func GetLayoutInstructions(node *i3.Node, i3inst I3Instruction) []LayoutInstruct
 }
 
 type MarkID struct {
-	ID     string           `json:"id"`
-	UUID   string           `json:"uuid"`
-	Layout types.LayoutType `json:"layout"`
+	ID     string                    `json:"id"`
+	UUID   string                    `json:"uuid"`
+	Layout types.LayoutType          `json:"layout"`
+  ParentNode string                `json:"parent-node"`
+  ParentLayout types.LayoutType    `json:"parent-layout"`
+  Depth int                        `json:"depth"`
 }
+
+func NewMarkIDFromNode(node *i3.Node, d int, parent *MarkID) MarkID {
+  m := MarkID{
+    ID: fmt.Sprint(node.ID),
+    UUID:   uuid.New().String(),
+    Depth:  d,
+  }
+
+  if parent != nil {
+    m.ParentNode = parent.UUID
+    if m.ParentNode != "" {
+      m.ParentLayout = parent.Layout
+    }
+  }
+
+  if node.Layout != "" {
+    m.Layout = types.LayoutType(node.Layout)
+  }
+
+  return m
+} 
 
 type Rect struct {
 	Height int64 `json:"height"`
@@ -52,6 +76,48 @@ type I3Instruction struct {
 	Layout    []LayoutInstruction `json:"layouts"`
 }
 
+func markFocusCommand(mark MarkID) []string {
+  cmdProto := make([]string, 0)
+  if mark.ParentNode != "" {
+    cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s`, mark.ParentNode, types.Focus))
+    cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s`, mark.ParentNode, mark.ParentLayout.CmdString()))
+  }
+  cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s, floating disable`, mark.UUID, types.Focus))
+  cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s`, mark.UUID, mark.Layout.CmdString()))
+
+  return cmdProto
+}
+
+func buildWorkspace(marks []MarkID) string {
+  cmdProto := make([]string, 0)
+  levels := 0
+  for _,m := range marks {
+    if m.UUID == "" {
+      continue
+    }
+
+    if m.Depth > levels {
+      levels = m.Depth
+    }
+  }
+
+  for loop := 0; loop <= levels; loop++ {
+    for _,m := range marks {
+      if m.UUID == "" {
+        continue
+      }
+
+      if m.Depth == loop {
+        cmdProto = append(cmdProto, markFocusCommand(m)...)
+      }
+    }
+  }
+
+  fullCmd := strings.Join(cmdProto, "; ")
+
+  return fullCmd
+}
+
 func (i I3Instruction) runCmd(c types.I3Cmd) string {
 	var fullCmd string
 	switch c {
@@ -63,15 +129,7 @@ func (i I3Instruction) runCmd(c types.I3Cmd) string {
 		fullCmd = fmt.Sprintf(`%s %s`, c, i.Workspace)
 
 	case types.Focus, types.Show:
-		cmdProto := []string{}
-		for _, m := range i.Marks {
-			if m.UUID == "" {
-				continue
-			}
-			cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s, floating disable`, m.UUID, c))
-			cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s`, m.UUID, m.Layout))
-		}
-		fullCmd = strings.Join(cmdProto, "; ")
+		fullCmd = buildWorkspace(i.Marks)
 
 	case types.Mark:
 		cmdProto := []string{}
@@ -96,6 +154,7 @@ func (i I3Instruction) runCmd(c types.I3Cmd) string {
 
 func (i I3Instruction) Run() types.Result {
 	res := types.Result{}
+  res.Msg = ""
 
 	for _, cmd := range i.CMD {
 		cmdString := i.runCmd(cmd)
@@ -119,23 +178,47 @@ func (i I3Instruction) getMark(n i3.NodeID) string {
 	return ""
 }
 
-func GetMarkIDs(node *i3.Node) []MarkID {
-	ids := make([]MarkID, 0)
-	last := MarkID{}
-	for i, n := range node.Nodes {
+func GetMarkIDs(node *i3.Node, depth int, seen map[i3.NodeID]MarkID, parent *MarkID) ([]MarkID, map[i3.NodeID]MarkID, bool) {
+  if len(node.Nodes) == 0 && node.Type == "workspace" {
+    return []MarkID{}, map[i3.NodeID]MarkID{}, true
+  }
+
+  ids := make([]MarkID, 0)
+  crawlDepth := depth
+
+	for _, n := range node.Nodes {
+    if _,ok := seen[n.ID]; ok {
+      continue
+    }
+
 		if len(n.Nodes) > 0 {
-			last.Layout = types.LayoutType(n.Layout)
-			ids = append(ids, GetMarkIDs(n)...)
-			ids[i].Layout = last.Layout
+      containerLayout := n.Layout
+
+      fncn := getFirstNonContainerNode(n)
+      if fncn == nil {
+        continue
+      }
+      fncnMark := NewMarkIDFromNode(fncn, crawlDepth, parent)
+      fncnMark.Layout = types.LayoutType(containerLayout)
+
+      seen[fncn.ID] = fncnMark
+      lastIdx := len(ids)-1
+      if lastIdx < 0 {
+        lastIdx = 0
+      }
+      ids = append(ids, fncnMark)
+      
+      gmi, nowSeen, _ := GetMarkIDs(n, crawlDepth + 1, seen, &fncnMark)
+      seen = nowSeen
+
+      ids = append(ids, gmi...)
+
 		} else {
-			ids = append(ids, MarkID{
-				ID:     fmt.Sprint(n.ID),
-				UUID:   uuid.New().String(),
-				Layout: types.LayoutType(n.Layout),
-			})
-		}
+      mid := NewMarkIDFromNode(n, crawlDepth, parent)
+			ids = append(ids, mid)
+    }
 	}
-	return ids
+	return ids, seen, false
 }
 
 type I3Store struct {
@@ -152,6 +235,25 @@ func in(i string, col []string) bool {
 	return false
 }
 
+func getFirstNonContainerNode(n *i3.Node) (*i3.Node) {
+  if len(n.Nodes) == 0 && n.WindowProperties.Instance != "" {
+    return n
+  }
+
+  for _,innerNode := range n.Nodes {
+    if innerNode.WindowProperties.Instance != "" {
+      return innerNode
+    }
+
+    res := getFirstNonContainerNode(innerNode)
+    if res != nil {
+      return res
+    }
+  }
+
+  return nil
+}
+
 func Watcher(c config.Config, data chan<- I3Instruction) {
 	recv := i3.Subscribe(i3.WorkspaceEventType)
 	defer recv.Close()
@@ -162,7 +264,10 @@ func Watcher(c config.Config, data chan<- I3Instruction) {
 		switch evt.Change {
 		case "focus":
 			if in(evt.Old.Name, c.Workspaces) {
-				markIDs := GetMarkIDs(&evt.Old)
+				markIDs,_,empty := GetMarkIDs(&evt.Old, 0, map[i3.NodeID]MarkID{}, nil)
+        if empty == true {
+           continue
+        }
 				cmd := I3Instruction{
 					Data:      "store",
 					CMD:       []types.I3Cmd{types.Mark, types.Save, types.Hide},

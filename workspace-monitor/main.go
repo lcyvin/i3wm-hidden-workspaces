@@ -95,11 +95,11 @@ func main() {
 		case inc := <-data:
 			go handleWatcherMsg(inc, db, result)
 		case res := <-result:
-			if res.Err != nil {
-				fmt.Println(res.Err)
-			}
 			if res.Msg != "" {
 				fmt.Println(res.Msg)
+			}
+			if res.Err != nil {
+				fmt.Println(res.Err)
 			}
 		}
 	}

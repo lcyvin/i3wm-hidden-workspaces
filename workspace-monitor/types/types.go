@@ -3,6 +3,17 @@ package types
 type I3Cmd string
 type LayoutType string
 
+func (lt LayoutType) CmdString() string {
+  switch lt {
+  case Splith:
+    return "splith"
+  case Splitv:
+    return "splitv"
+  }
+
+  return ""
+}
+
 const (
 	Splith  LayoutType = "splith"
 	Splitv             = "splitv"
