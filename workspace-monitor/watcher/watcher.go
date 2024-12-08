@@ -236,6 +236,10 @@ func in(i string, col []string) bool {
 }
 
 func getFirstNonContainerNode(n *i3.Node) (*i3.Node) {
+  fmt.Println(n.WindowProperties.Class)
+  fmt.Println(n.WindowProperties.Title)
+  fmt.Println(n.WindowProperties.Role)
+  fmt.Println(n.WindowProperties.Instance)
   if len(n.Nodes) == 0 && n.WindowProperties.Instance != "" {
     return n
   }
