@@ -3,12 +3,23 @@ package types
 type I3Cmd string
 type LayoutType string
 
-func (lt LayoutType) CmdString() string {
+func (lt LayoutType) Window() string {
   switch lt {
   case Splith:
     return "splith"
   case Splitv:
     return "splitv"
+  }
+
+  return ""
+}
+
+func (lt LayoutType) Container() string {
+  switch lt {
+  case Splith:
+    return "split horizontal"
+  case Splitv:
+    return "split vertical"
   }
 
   return ""
@@ -35,6 +46,6 @@ const (
 
 type Result struct {
 	Err  error
-	Msg  string
+	Msg  []string
 	Data interface{}
 }

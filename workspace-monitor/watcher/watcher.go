@@ -34,25 +34,28 @@ func GetLayoutInstructions(node *i3.Node, i3inst I3Instruction) []LayoutInstruct
 }
 
 type MarkID struct {
-	ID     string                    `json:"id"`
-	UUID   string                    `json:"uuid"`
-	Layout types.LayoutType          `json:"layout"`
-  ParentNode string                `json:"parent-node"`
-  ParentLayout types.LayoutType    `json:"parent-layout"`
-  Depth int                        `json:"depth"`
+	ID              string            `json:"id"`
+	UUID            string            `json:"uuid"`
+	Layout          types.LayoutType  `json:"layout"`
+  ParentNode      string            `json:"parent-node"`
+  IsParent        bool              `json:"is-parent"`
+  ContainerLayout types.LayoutType  `json:"container-layout"`
+  Depth           int               `json:"depth"`
+  Workspace       string            `json:"workspace"`
 }
 
-func NewMarkIDFromNode(node *i3.Node, d int, parent *MarkID) MarkID {
+func NewMarkIDFromNode(ws string, node *i3.Node, d int, parent *MarkID) MarkID {
   m := MarkID{
-    ID: fmt.Sprint(node.ID),
+    ID:     fmt.Sprint(node.ID),
     UUID:   uuid.New().String(),
     Depth:  d,
+    Workspace: ws,
   }
 
   if parent != nil {
     m.ParentNode = parent.UUID
     if m.ParentNode != "" {
-      m.ParentLayout = parent.Layout
+      m.ContainerLayout = parent.Layout
     }
   }
 
@@ -76,16 +79,24 @@ type I3Instruction struct {
 	Layout    []LayoutInstruction `json:"layouts"`
 }
 
-func markFocusCommand(mark MarkID) []string {
+func markFocus(mark MarkID) []string {
   cmdProto := make([]string, 0)
+  // if the mark has a parent, focus that parent first so its container inheritence occurs
   if mark.ParentNode != "" {
-    cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s`, mark.ParentNode, types.Focus))
-    cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s`, mark.ParentNode, mark.ParentLayout.CmdString()))
+    cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] focus`, mark.ParentNode))
   }
-  cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s, floating disable`, mark.UUID, types.Focus))
-  cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s`, mark.UUID, mark.Layout.CmdString()))
+
+  // pop the window out of the scratchpad
+  cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] scratchpad show, floating disable`, mark.UUID))
+
+  // set the window itself's layout
+  cmdProto = append(cmdProto, fmt.Sprintf(`[con_mark="%s"] %s`, mark.UUID, mark.Layout.Window()))
 
   return cmdProto
+}
+
+func markContainerize(mark MarkID) []string {
+  return []string{fmt.Sprintf(`[con_mark="%s"] %s`, mark.UUID, mark.ContainerLayout.Container())}
 }
 
 func buildWorkspace(marks []MarkID) string {
@@ -101,14 +112,31 @@ func buildWorkspace(marks []MarkID) string {
     }
   }
 
+  // this is kindof a hack to get out of a corner I've coded myself into.
+  // Starting to think about doing a V2...
+  markTree := make([][]MarkID, 0)
   for loop := 0; loop <= levels; loop++ {
+    markTree = append(markTree, []MarkID{})
     for _,m := range marks {
       if m.UUID == "" {
         continue
       }
 
       if m.Depth == loop {
-        cmdProto = append(cmdProto, markFocusCommand(m)...)
+        markTree[loop] = append(markTree[loop], m)
+        //cmdProto = append(cmdProto, markFocusCommand(m)...)
+      }
+    }
+  }
+
+  // process the tree, first popping windows, then handling container layout
+  for _, lvl := range markTree {
+    for _, mark := range lvl {
+      cmdProto = append(cmdProto, markFocus(mark)...)
+    }
+    for _, mark := range lvl {
+      if mark.IsParent {
+        cmdProto = append(cmdProto, markContainerize(mark)...)
       }
     }
   }
@@ -154,11 +182,14 @@ func (i I3Instruction) runCmd(c types.I3Cmd) string {
 
 func (i I3Instruction) Run() types.Result {
 	res := types.Result{}
-  res.Msg = ""
+  res.Msg = []string{}
 
 	for _, cmd := range i.CMD {
 		cmdString := i.runCmd(cmd)
-		res.Msg = res.Msg + fmt.Sprintf("Running: %s\n", cmdString)
+    if cmdString == "" {
+      break
+    }
+		res.Msg = append(res.Msg, fmt.Sprintf("[RUNCMD] %s", cmdString))
 		_, err := i3.RunCommand(cmdString)
 		if err != nil {
 			res.Err = err
@@ -178,7 +209,7 @@ func (i I3Instruction) getMark(n i3.NodeID) string {
 	return ""
 }
 
-func GetMarkIDs(node *i3.Node, depth int, seen map[i3.NodeID]MarkID, parent *MarkID) ([]MarkID, map[i3.NodeID]MarkID, bool) {
+func GetMarkIDs(ws string, node *i3.Node, depth int, seen map[i3.NodeID]MarkID, parent *MarkID) ([]MarkID, map[i3.NodeID]MarkID, bool) {
   if len(node.Nodes) == 0 && node.Type == "workspace" {
     return []MarkID{}, map[i3.NodeID]MarkID{}, true
   }
@@ -198,8 +229,9 @@ func GetMarkIDs(node *i3.Node, depth int, seen map[i3.NodeID]MarkID, parent *Mar
       if fncn == nil {
         continue
       }
-      fncnMark := NewMarkIDFromNode(fncn, crawlDepth, parent)
-      fncnMark.Layout = types.LayoutType(containerLayout)
+      fncnMark := NewMarkIDFromNode(ws, fncn, crawlDepth, parent)
+      fncnMark.ContainerLayout = types.LayoutType(containerLayout)
+      fncnMark.IsParent = true
 
       seen[fncn.ID] = fncnMark
       lastIdx := len(ids)-1
@@ -208,13 +240,14 @@ func GetMarkIDs(node *i3.Node, depth int, seen map[i3.NodeID]MarkID, parent *Mar
       }
       ids = append(ids, fncnMark)
       
-      gmi, nowSeen, _ := GetMarkIDs(n, crawlDepth + 1, seen, &fncnMark)
+      gmi, nowSeen, _ := GetMarkIDs(ws, n, crawlDepth + 1, seen, &fncnMark)
       seen = nowSeen
 
       ids = append(ids, gmi...)
 
 		} else {
-      mid := NewMarkIDFromNode(n, crawlDepth, parent)
+      mid := NewMarkIDFromNode(ws, n, crawlDepth, parent)
+      mid.IsParent = false
 			ids = append(ids, mid)
     }
 	}
@@ -236,10 +269,6 @@ func in(i string, col []string) bool {
 }
 
 func getFirstNonContainerNode(n *i3.Node) (*i3.Node) {
-  fmt.Println(n.WindowProperties.Class)
-  fmt.Println(n.WindowProperties.Title)
-  fmt.Println(n.WindowProperties.Role)
-  fmt.Println(n.WindowProperties.Instance)
   if len(n.Nodes) == 0 && n.WindowProperties.Instance != "" {
     return n
   }
@@ -268,13 +297,10 @@ func Watcher(c config.Config, data chan<- I3Instruction) {
 		switch evt.Change {
 		case "focus":
 			if in(evt.Old.Name, c.Workspaces) {
-				markIDs,_,empty := GetMarkIDs(&evt.Old, 0, map[i3.NodeID]MarkID{}, nil)
-        if empty == true {
-           continue
-        }
+				markIDs,_,_ := GetMarkIDs(evt.Old.Name, &evt.Old, 0, map[i3.NodeID]MarkID{}, nil)
 				cmd := I3Instruction{
 					Data:      "store",
-					CMD:       []types.I3Cmd{types.Mark, types.Save, types.Hide},
+					CMD:       []types.I3Cmd{types.Mark, types.Hide},
 					Workspace: evt.Old.Name,
 					Marks:     markIDs,
 				}
